@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BTC Charts</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div id="chart"></div>
+    <form id="y-line-form" style="margin-bottom: 10px;">
+        <label for="y-value">Введите Y значение (Depth Ratio):</label>
+        <input type="text" id="y-value" name="y-value" required>
+        <button type="submit">Отправить</button>
+        <button type="button" onclick="resetAll()">Сбросить</button>
+    </form>
+    <form id="depth-ratio-form" style="margin-bottom: 10px;">
+        <label for="depth-ratio">Выберите Depth Ratio:</label>
+        <select id="depth-ratio" name="depth-ratio" required>
+            <option value="" disabled selected>Выберите Depth Ratio</option>
+            {% for depth in DEPTH_PERCENTAGES %}
+                <option value="{{ depth }}">{{ depth }}%</option>
+            {% endfor %}
+        </select>
+        <button type="button" onclick="updateDepthRatio()">Отправить</button>
+        <button type="button" onclick="resetAll()">Сбросить</button>
+    </form>
+    <script>
+        document.getElementById("y-line-form").addEventListener("submit", function(event) {
+            event.preventDefault();
+
+            const yValue = document.getElementById("y-value").value;
+
+            fetch('/add-y-line', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ "y-value": yValue })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    Plotly.react('chart', data.data, data.layout);
+                }
+            })
+            .catch(error => console.error('Ошибка:', error));
+        });
+
+        function updateDepthRatio() {
+            const depthRatio = document.getElementById("depth-ratio").value;
+
+            fetch('/update-depth-ratio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ "depth-ratio": depthRatio })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    alert(data.message);
+                    // Обновляем график после изменения Depth Ratio
+                    fetchChartData();
+                }
+            })
+            .catch(error => console.error('Ошибка:', error));
+        }
+
+        function resetAll() {
+            fetch('/reset', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    Plotly.react('chart', data.data, data.layout);
+                }
+            })
+            .catch(error => console.error('Ошибка:', error));
+        }
+
+        function fetchChartData() {
+            fetch('/get-chart-data')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(data.error);
+                    } else {
+                        Plotly.react('chart', data.data, data.layout);
+                    }
+                })
+                .catch(error => console.error('Ошибка при получении данных графика:', error));
+        }
+
+        // Инициализируем график при загрузке страницы
+        window.onload = function() {
+            fetchChartData();
+        };
+    </script>
+</body>
+</html>

@@ -1,127 +1,33 @@
-from flask import Flask, render_template_string, request, jsonify
+from sqlalchemy import create_engine
 import pandas as pd
 from datetime import datetime
+from flask import Flask, render_template, request, jsonify
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
-import os
-import re
 
-# Конфигурация файлов
-LOG_FILE = "./logs/depth_ratio_log.txt"
-CANDLES_FILE = "./logs/btc_price_log.txt"
+# Конфигурация базы данных PostgreSQL
+DB_CONNECTION = {
+    'dbname': 'default_db',
+    'user': 'cloud_user',
+    'password': 'nMhczImev9*w',
+    'host': 'podojofe.beget.app',  # или другой адрес сервера
+    'port': '5432'
+}
+
+# Создание строки подключения SQLAlchemy
+DATABASE_URL = f"postgresql://{DB_CONNECTION['user']}:{DB_CONNECTION['password']}@{DB_CONNECTION['host']}:{DB_CONNECTION['port']}/{DB_CONNECTION['dbname']}"
+engine = create_engine(DATABASE_URL)
+
+# Конфигурация Depth Ratios
 DEPTH_PERCENTAGES = [3, 5, 8, 15, 30]
 user_y_value = None
 user_depth_ratio_value = None  # Для хранения выбранного Depth Ratio
 
 app = Flask(__name__)
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>BTC Charts</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-</head>
-<body>
-    <div id="chart"></div>
-    <form id="y-line-form" style="margin-bottom: 10px;">
-        <label for="y-value">Введите Y значение (Depth Ratio):</label>
-        <input type="text" id="y-value" name="y-value" required>
-        <button type="submit">Отправить</button>
-        <button type="button" onclick="resetAll()">Сбросить</button>
-    </form>
-    <form id="depth-ratio-form" style="margin-bottom: 10px;">
-        <label for="depth-ratio">Выберите Depth Ratio:</label>
-        <select id="depth-ratio" name="depth-ratio" required>
-            <option value="" disabled selected>Выберите Depth Ratio</option>
-            {% for depth in DEPTH_PERCENTAGES %}
-                <option value="{{ depth }}">{{ depth }}%</option>
-            {% endfor %}
-        </select>
-        <button type="button" onclick="updateDepthRatio()">Отправить</button>
-        <button type="button" onclick="resetAll()">Сбросить</button>
-    </form>
-    <script>
-        document.getElementById("y-line-form").addEventListener("submit", function(event) {
-            event.preventDefault();
-
-            const yValue = document.getElementById("y-value").value;
-
-            fetch('/add-y-line', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ "y-value": yValue })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert(data.error);
-                } else {
-                    Plotly.react('chart', data.data, data.layout);
-                }
-            })
-            .catch(error => console.error('Ошибка:', error));
-        });
-
-        function updateDepthRatio() {
-            const depthRatio = document.getElementById("depth-ratio").value;
-
-            fetch('/update-depth-ratio', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ "depth-ratio": depthRatio })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert(data.error);
-                } else {
-                    alert(data.message);
-                    // Обновляем график после изменения Depth Ratio
-                    fetchChartData();
-                }
-            })
-            .catch(error => console.error('Ошибка:', error));
-        }
-
-        function resetAll() {
-            fetch('/reset', { method: 'POST' })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    alert(data.error);
-                } else {
-                    Plotly.react('chart', data.data, data.layout);
-                }
-            })
-            .catch(error => console.error('Ошибка:', error));
-        }
-
-        function fetchChartData() {
-            fetch('/get-chart-data')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        alert(data.error);
-                    } else {
-                        Plotly.react('chart', data.data, data.layout);
-                    }
-                })
-                .catch(error => console.error('Ошибка при получении данных графика:', error));
-        }
-
-        // Инициализируем график при загрузке страницы
-        window.onload = function() {
-            fetchChartData();
-        };
-    </script>
-</body>
-</html>
-"""
-
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE, DEPTH_PERCENTAGES=DEPTH_PERCENTAGES)
+    return render_template("index.html", DEPTH_PERCENTAGES=DEPTH_PERCENTAGES)
 
 @app.route("/add-y-line", methods=["POST"])
 def add_y_line():
@@ -162,18 +68,26 @@ def get_chart_data():
 def _get_chart_data():
     global user_y_value, user_depth_ratio_value, DEPTH_PERCENTAGES
 
-    candles_df = parse_candles_file(CANDLES_FILE)
+    # Получаем данные о свечах из PostgreSQL
+    candles_df = fetch_candles_from_db()
     if candles_df.empty:
         return {"error": "Нет доступных данных свечей."}
 
-    depth_df = parse_log_file(LOG_FILE, DEPTH_PERCENTAGES)
+    # Получаем данные о Depth Ratio из PostgreSQL
+    depth_df = fetch_depth_ratios_from_db(DEPTH_PERCENTAGES)
     if depth_df.empty:
         return {"error": "Нет доступных данных Depth Ratio."}
 
+    # Преобразуем столбец timestamp в формат datetime
+    candles_df['timestamp'] = pd.to_datetime(candles_df['timestamp'])
+    depth_df['timestamp'] = pd.to_datetime(depth_df['timestamp'])
+
+    # Пример фильтрации по времени (если требуется)
     start_time = datetime.strptime("2024-11-20 19:16:00", "%Y-%m-%d %H:%M:%S")
     depth_df = depth_df[depth_df['timestamp'] >= start_time]
     candles_df = candles_df[candles_df['timestamp'] >= start_time]
 
+    # Создание графиков с использованием Plotly
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1)
 
     # График свечей
@@ -190,26 +104,25 @@ def _get_chart_data():
 
     # Графики Depth Ratio
     if user_depth_ratio_value is not None:
-        # Отображаем только выбранный Depth Ratio
-        column_name = f'{user_depth_ratio_value}%'
+        column_name = f'depth_{user_depth_ratio_value}'
         if column_name in depth_df.columns:
             fig.add_trace(go.Scatter(
                 x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
                 y=depth_df[column_name].tolist(),
                 mode='lines',
-                name=f"{column_name} Depth Ratio",
+                name=f"{user_depth_ratio_value}% Depth Ratio",
                 line=dict(color='blue')
             ), row=2, col=1)
     else:
         # Отображаем все Depth Ratios
         for depth in DEPTH_PERCENTAGES:
-            column_name = f'{depth}%'
+            column_name = f'depth_{depth}'
             if column_name in depth_df.columns:
                 fig.add_trace(go.Scatter(
                     x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
                     y=depth_df[column_name].tolist(),
                     mode='lines',
-                    name=f"{column_name} Depth Ratio"
+                    name=f"{depth}% Depth Ratio"
                 ), row=2, col=1)
 
     # Добавляем пользовательскую линию Y, если задано
@@ -235,78 +148,34 @@ def _get_chart_data():
 
     return fig.to_plotly_json()
 
-# Вспомогательные функции для обработки файлов
-def parse_candles_file(file_path):
-    if not os.path.exists(file_path):
+def fetch_candles_from_db():
+    query = """
+    SELECT timestamp, open, high, low, close
+    FROM btc_price
+    ORDER BY timestamp;
+    """
+    try:
+        candles_df = pd.read_sql(query, engine)
+        return candles_df
+    except Exception as e:
+        print(f"Ошибка при извлечении данных о свечах: {e}")
         return pd.DataFrame()
 
-    data = {
-        'timestamp': [],
-        'open': [],
-        'high': [],
-        'low': [],
-        'close': []
-    }
+def fetch_depth_ratios_from_db(depth_percentages):
+    depth_columns = [f"depth_{depth}" for depth in depth_percentages]
+    columns_str = ", ".join(depth_columns)
 
-    pattern = re.compile(
-        r"\[(?P<timestamp>[\d\-: ]+)\] Open: (?P<open>\d+\.?\d*), High: (?P<high>\d+\.?\d*), Low: (?P<low>\d+\.?\d*), Close: (?P<close>\d+\.?\d*)"
-    )
-
-    with open(file_path, "r") as file:
-        for line in file:
-            match = pattern.match(line.strip())
-            if match:
-                data['timestamp'].append(datetime.strptime(match.group('timestamp'), "%Y-%m-%d %H:%M:%S"))
-                data['open'].append(float(match.group('open')))
-                data['high'].append(float(match.group('high')))
-                data['low'].append(float(match.group('low')))
-                data['close'].append(float(match.group('close')))
-
-    return pd.DataFrame(data)
-
-def parse_log_file(log_file, depth_percentages):
-    if not os.path.exists(log_file):
+    query = f"""
+    SELECT timestamp, {columns_str}
+    FROM btc_depth_ratios
+    ORDER BY timestamp;
+    """
+    try:
+        depth_df = pd.read_sql(query, engine)
+        return depth_df
+    except Exception as e:
+        print(f"Ошибка при извлечении данных о Depth Ratios: {e}")
         return pd.DataFrame()
-
-    data = {'timestamp': []}
-    for depth in depth_percentages:
-        data[f'{depth}%'] = []
-
-    with open(log_file, "r") as file:
-        for line in file:
-            parts = line.strip().split("] Depth Ratio для BTC-USD: ")
-            if len(parts) != 2:
-                continue
-
-            try:
-                timestamp = datetime.strptime(parts[0][1:], "%Y-%m-%d %H:%M:%S")
-                data['timestamp'].append(timestamp)
-
-                ratios = parts[1].split(", ")
-                ratio_dict = {f"{d}%": None for d in depth_percentages}
-                for ratio in ratios:
-                    depth, value = ratio.split(": ")
-                    depth = depth.strip()
-                    if depth in ratio_dict:
-                        ratio_dict[depth] = float(value)
-
-                for depth in depth_percentages:
-                    key = f"{depth}%"
-                    value = ratio_dict.get(key)
-                    if value is not None:
-                        data[key].append(value)
-                    else:
-                        data[key].append(None)
-            except Exception as e:
-                # Можно добавить логирование ошибки
-                continue
-
-    # Преобразуем списки в pandas Series с правильными типами
-    for key in data:
-        if key != 'timestamp':
-            data[key] = pd.to_numeric(data[key], errors='coerce')
-
-    return pd.DataFrame(data)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5004, debug=True)

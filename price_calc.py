@@ -1,17 +1,24 @@
 import requests
 import time
 import logging
+import psycopg2
 from datetime import datetime
 
-# Глобальная переменная для имени лог-файла
-FILENAME = './logs/btc_price_log.txt'
-
-# Настройка логгера для технического лога (только для технических сообщений)
+# Настройка логгера для технических сообщений
 technical_logger = logging.getLogger('technical_logger')
 technical_logger.setLevel(logging.DEBUG)
 technical_handler = logging.FileHandler('./logs_/price_calc.log')
 technical_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 technical_logger.addHandler(technical_handler)
+
+# Настройка подключения к базе данных
+DB_CONNECTION = {
+    'dbname': 'default_db',
+    'user': 'cloud_user',
+    'password': 'nMhczImev9*w',
+    'host': 'podojofe.beget.app',  # или другой адрес сервера
+    'port': '5432'
+}
 
 def fetch_current_price(product_id='BTC-USD'):
     """
@@ -46,33 +53,39 @@ def calculate_minute_candle(data_points):
     low_price = min(data_points)
     return open_price, high_price, low_price, close_price
 
-def write_to_log(message):
+def write_candle_to_db(timestamp, ohlc):
     """
-    Записывает сообщение в лог-файл.
+    Записывает свечу в базу данных.
 
-    :param message: Строка сообщения для записи
+    :param timestamp: Метка времени
+    :param ohlc: Кортеж (open, high, low, close)
     """
     try:
-        with open(FILENAME, 'a', encoding='utf-8') as f:
-            f.write(message)
+        # Подключаемся к базе данных
+        conn = psycopg2.connect(**DB_CONNECTION)
+        cursor = conn.cursor()
+
+        # SQL-запрос для вставки данных
+        query = """
+            INSERT INTO btc_price (timestamp, open, high, low, close)
+            VALUES (%s, %s, %s, %s, %s);
+        """
+        cursor.execute(query, (timestamp, ohlc[0], ohlc[1], ohlc[2], ohlc[3]))
+
+        # Сохраняем изменения и закрываем соединение
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        technical_logger.debug(f"Свеча добавлена в базу данных для {timestamp}")
     except Exception as e:
-        technical_logger.error(f"Не удалось записать в лог-файл: {e}")
+        technical_logger.error(f"Ошибка при записи в базу данных: {e}")
 
 def current_timestamp():
     """
     Возвращает текущую метку времени в формате YYYY-MM-DD HH:MM:SS
     """
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-def write_candle_to_log(timestamp, ohlc):
-    """
-    Записывает свечу в лог-файл.
-
-    :param timestamp: Метка времени
-    :param ohlc: Кортеж (open, high, low, close)
-    """
-    message = f"[{timestamp}] Open: {ohlc[0]:.2f}, High: {ohlc[1]:.2f}, Low: {ohlc[2]:.2f}, Close: {ohlc[3]:.2f}\n"
-    write_to_log(message)
 
 def main():
     product = 'BTC-USD'  # Торговая пара
@@ -92,7 +105,7 @@ def main():
             # Рассчитываем и записываем свечу
             ohlc = calculate_minute_candle(minute_data)
             if all(ohlc):  # Убедимся, что данные есть
-                write_candle_to_log(current_timestamp(), ohlc)
+                write_candle_to_db(current_timestamp(), ohlc)
             minute_data = []  # Сбрасываем данные
             last_minute = current_minute
 
