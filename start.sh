@@ -5,3 +5,6 @@ nohup python3 universal_plot.py > logs_/universal_plot.log 2>&1 &
 
  #pgrep -fl python3
  #top -p $(pgrep -d',' -f python3)
+
+#pkill -9 python3
+#ps - check processes

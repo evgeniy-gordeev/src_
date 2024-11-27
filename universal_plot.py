@@ -1,16 +1,23 @@
-from sqlalchemy import create_engine
 import pandas as pd
+import numpy as np
+from flask import Flask, render_template_string, jsonify, render_template
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+from sqlalchemy import create_engine
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 # Конфигурация базы данных PostgreSQL
 DB_CONNECTION = {
     'dbname': 'default_db',
     'user': 'cloud_user',
     'password': 'nMhczImev9*w',
-    'host': 'podojofe.beget.app',  # или другой адрес сервера
+    'host': 'podojofe.beget.app',
     'port': '5432'
 }
 
@@ -23,132 +30,14 @@ DEPTH_PERCENTAGES = [3, 5, 8, 15, 30]
 user_y_value = None
 user_depth_ratio_value = None  # Для хранения выбранного Depth Ratio
 
+# Flask-приложение
 app = Flask(__name__)
 
-@app.route("/")
-def index():
-    return render_template("index.html", DEPTH_PERCENTAGES=DEPTH_PERCENTAGES)
-
-@app.route("/add-y-line", methods=["POST"])
-def add_y_line():
-    global user_y_value
-    try:
-        data = request.get_json()
-        user_y_value = float(data['y-value'])
-    except (ValueError, KeyError):
-        return jsonify({"error": "Неверное Y значение. Пожалуйста, введите корректное число."}), 400
-    return jsonify(_get_chart_data())
-
-@app.route("/update-depth-ratio", methods=["POST"])
-def update_depth_ratio():
-    global user_depth_ratio_value
-    try:
-        data = request.get_json()
-        depth_ratio_str = data['depth-ratio']
-        # Валидируем, что введённый Depth Ratio присутствует в DEPTH_PERCENTAGES
-        depth_ratio = int(depth_ratio_str)
-        if depth_ratio not in DEPTH_PERCENTAGES:
-            raise ValueError
-        user_depth_ratio_value = depth_ratio
-    except (KeyError, ValueError):
-        return jsonify({"error": f"Неверный Depth Ratio. Пожалуйста, выберите одно из значений: {DEPTH_PERCENTAGES}."}), 400
-    return jsonify({"message": "Depth Ratio успешно обновлён."})
-
-@app.route("/reset", methods=["POST"])
-def reset():
-    global user_y_value, user_depth_ratio_value
-    user_y_value = None
-    user_depth_ratio_value = None
-    return jsonify(_get_chart_data())
-
-@app.route("/get-chart-data", methods=["GET"])
-def get_chart_data():
-    return jsonify(_get_chart_data())
-
-def _get_chart_data():
-    global user_y_value, user_depth_ratio_value, DEPTH_PERCENTAGES
-
-    # Получаем данные о свечах из PostgreSQL
-    candles_df = fetch_candles_from_db()
-    if candles_df.empty:
-        return {"error": "Нет доступных данных свечей."}
-
-    # Получаем данные о Depth Ratio из PostgreSQL
-    depth_df = fetch_depth_ratios_from_db(DEPTH_PERCENTAGES)
-    if depth_df.empty:
-        return {"error": "Нет доступных данных Depth Ratio."}
-
-    # Преобразуем столбец timestamp в формат datetime
-    candles_df['timestamp'] = pd.to_datetime(candles_df['timestamp'])
-    depth_df['timestamp'] = pd.to_datetime(depth_df['timestamp'])
-
-    # Пример фильтрации по времени (если требуется)
-    start_time = datetime.strptime("2024-11-20 19:16:00", "%Y-%m-%d %H:%M:%S")
-    depth_df = depth_df[depth_df['timestamp'] >= start_time]
-    candles_df = candles_df[candles_df['timestamp'] >= start_time]
-
-    # Создание графиков с использованием Plotly
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1)
-
-    # График свечей
-    fig.add_trace(go.Candlestick(
-        x=candles_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-        open=candles_df['open'].tolist(),
-        high=candles_df['high'].tolist(),
-        low=candles_df['low'].tolist(),
-        close=candles_df['close'].tolist(),
-        increasing_line_color='green',
-        decreasing_line_color='red',
-        name="Свечи"
-    ), row=1, col=1)
-
-    # Графики Depth Ratio
-    if user_depth_ratio_value is not None:
-        column_name = f'depth_{user_depth_ratio_value}'
-        if column_name in depth_df.columns:
-            fig.add_trace(go.Scatter(
-                x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-                y=depth_df[column_name].tolist(),
-                mode='lines',
-                name=f"{user_depth_ratio_value}% Depth Ratio",
-                line=dict(color='blue')
-            ), row=2, col=1)
-    else:
-        # Отображаем все Depth Ratios
-        for depth in DEPTH_PERCENTAGES:
-            column_name = f'depth_{depth}'
-            if column_name in depth_df.columns:
-                fig.add_trace(go.Scatter(
-                    x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-                    y=depth_df[column_name].tolist(),
-                    mode='lines',
-                    name=f"{depth}% Depth Ratio"
-                ), row=2, col=1)
-
-    # Добавляем пользовательскую линию Y, если задано
-    if user_y_value is not None:
-        fig.add_trace(go.Scatter(
-            x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-            y=[user_y_value] * len(depth_df),
-            mode='lines',
-            line=dict(dash='dash', color='black'),
-            name=f"Y={user_y_value}"
-        ), row=2, col=1)
-
-    fig.update_layout(
-        title_text="BTC/USDT и Depth Ratio",
-        height=800,
-        legend=dict(x=0.02, y=0.98, bgcolor="rgba(255, 255, 255, 0.5)", bordercolor="Black", borderwidth=1)
-    )
-
-    fig.update_xaxes(rangeslider=dict(visible=False), row=1, col=1)
-    fig.update_xaxes(title="Время", row=2, col=1)
-    fig.update_yaxes(title="Цена (USDT)", row=1, col=1)
-    fig.update_yaxes(title="Depth Ratio", row=2, col=1)
-
-    return fig.to_plotly_json()
 
 def fetch_candles_from_db():
+    """
+    Извлекает данные о свечах из таблицы btc_price в PostgreSQL
+    """
     query = """
     SELECT timestamp, open, high, low, close
     FROM btc_price
@@ -156,12 +45,17 @@ def fetch_candles_from_db():
     """
     try:
         candles_df = pd.read_sql(query, engine)
+        if candles_df.empty:
+            logger.warning("Данные о свечах отсутствуют.")
         return candles_df
     except Exception as e:
-        print(f"Ошибка при извлечении данных о свечах: {e}")
+        logger.error(f"Ошибка при извлечении данных о свечах: {e}")
         return pd.DataFrame()
 
 def fetch_depth_ratios_from_db(depth_percentages):
+    """
+    Извлекает данные о Depth Ratio из таблицы btc_depth_ratios в PostgreSQL
+    """
     depth_columns = [f"depth_{depth}" for depth in depth_percentages]
     columns_str = ", ".join(depth_columns)
 
@@ -172,10 +66,94 @@ def fetch_depth_ratios_from_db(depth_percentages):
     """
     try:
         depth_df = pd.read_sql(query, engine)
+        if depth_df.empty:
+            logger.warning("Данные о Depth Ratios отсутствуют.")
         return depth_df
     except Exception as e:
-        print(f"Ошибка при извлечении данных о Depth Ratios: {e}")
+        logger.error(f"Ошибка при извлечении данных о Depth Ratios: {e}")
         return pd.DataFrame()
 
+@app.route("/")
+def index():
+    try:
+        # Получаем данные о свечах из PostgreSQL
+        candles_df = fetch_candles_from_db()
+        if candles_df.empty:
+            return render_template_string("<h2>Нет доступных данных свечей.</h2>")
+
+        # Получаем данные о Depth Ratio из PostgreSQL
+        depth_df = fetch_depth_ratios_from_db(DEPTH_PERCENTAGES)
+        if depth_df.empty:
+            return render_template_string("<h2>Нет доступных данных Depth Ratio.</h2>")
+
+        # Преобразуем столбец timestamp в datetime
+        candles_df['timestamp'] = pd.to_datetime(candles_df['timestamp'])
+        depth_df['timestamp'] = pd.to_datetime(depth_df['timestamp'])
+
+        # Проверяем наличие необходимых столбцов
+        required_columns = ['open', 'high', 'low', 'close']
+        if not all(column in candles_df.columns for column in required_columns):
+            logger.error("Необходимые столбцы отсутствуют в данных свечей.")
+            return render_template_string("<h2>Данные свечей некорректны.</h2>")
+
+        # Пример фильтрации по времени (если требуется)
+        start_time = datetime.strptime("2024-11-20 19:16:00", "%Y-%m-%d %H:%M:%S")
+        candles_df = candles_df[candles_df['timestamp'] >= start_time]
+        depth_df = depth_df[depth_df['timestamp'] >= start_time]
+
+        # Проверяем, что после фильтрации данные не пустые
+        if candles_df.empty or depth_df.empty:
+            logger.warning("Нет данных для отображения после фильтрации по времени.")
+            return render_template_string("<h2>Нет данных для отображения.</h2>")
+
+        # Создаем график с двумя подграфиками (OHLC и Depth Ratios)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1)
+
+        # График свечей (OHLC)
+        fig.add_trace(go.Candlestick(
+            x=candles_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+            open=candles_df['open'].tolist(),
+            high=candles_df['high'].tolist(),
+            low=candles_df['low'].tolist(),
+            close=candles_df['close'].tolist(),
+            increasing_line_color='green',
+            decreasing_line_color='red',
+            name="Свечи"
+        ), row=1, col=1)
+
+        # Графики Depth Ratio
+        for depth in DEPTH_PERCENTAGES:
+            column_name = f'depth_{depth}'
+            if column_name in depth_df.columns:
+                fig.add_trace(go.Scattergl(
+                    x=depth_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+                    y=depth_df[column_name].tolist(),
+                    mode='lines',
+                    name=f"{depth}% Depth Ratio"
+                ), row=2, col=1)
+            else:
+                logger.warning(f"Столбец {column_name} отсутствует в данных Depth Ratio.")
+
+        # Настройки графика
+        fig.update_layout(
+            title_text="BTC/USDT и Depth Ratio",
+            height=800,
+            legend=dict(x=0.02, y=0.98, bgcolor="rgba(255, 255, 255, 0.5)", bordercolor="Black", borderwidth=1)
+        )
+
+        fig.update_xaxes(rangeslider=dict(visible=False), row=1, col=1)
+        fig.update_xaxes(title="Время", row=2, col=1)
+        fig.update_yaxes(title="Цена (USDT)", row=1, col=1)
+        fig.update_yaxes(title="Depth Ratio", row=2, col=1)
+
+        # Преобразуем график в JSON-совместимый формат
+        graph_data = fig.to_plotly_json()
+
+        # Отображаем HTML с графиком
+        return render_template('index.html', graph_data=graph_data)
+    except Exception as e:
+        logger.error(f"Ошибка в маршруте '/': {e}")
+        return render_template_string("<h2>Произошла ошибка при обработке запроса.</h2>")
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5004, debug=True)
+    app.run(host="0.0.0.0", port=5004, debug=False)
